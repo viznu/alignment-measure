@@ -1,0 +1,5 @@
+*.pyc
+__pycache__/
+.DS_Store
+data/mlx_raw/
+data/mlx_curated/
