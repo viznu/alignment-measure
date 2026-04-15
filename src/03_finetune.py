@@ -1,5 +1,5 @@
 """
-Step 4 & 5: Fine-tune models using MLX-LM native LoRA.
+Step 3: Fine-tune models using MLX-LM native LoRA.
 Uses Apple Silicon MLX for efficient local training.
 """
 
@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import sys
+import yaml
 
 
 def prepare_mlx_data(input_jsonl, output_dir):
@@ -18,11 +19,9 @@ def prepare_mlx_data(input_jsonl, output_dir):
     with open(input_jsonl) as f:
         for line in f:
             ex = json.loads(line)
-            # MLX-LM expects {"text": "..."} format for completion-style training
             text = f"{ex['prompt']} {ex['completion']}"
             examples.append({"text": text})
 
-    # Split: 90% train, 5% valid, 5% test
     n = len(examples)
     train_end = int(n * 0.90)
     valid_end = int(n * 0.95)
@@ -43,7 +42,24 @@ def prepare_mlx_data(input_jsonl, output_dir):
     return output_dir
 
 
-def run_finetune(model_id, data_dir, adapter_path, iters=1000):
+def generate_lora_config(config_path, rank=16, scale=20.0, dropout=0.0):
+    """Generate a LoRA config YAML for MLX-LM."""
+    config = {
+        "lora_parameters": {
+            "rank": rank,
+            "scale": scale,
+            "dropout": dropout,
+        }
+    }
+    os.makedirs(os.path.dirname(config_path), exist_ok=True)
+    with open(config_path, "w") as f:
+        yaml.dump(config, f)
+    print(f"  LoRA config: rank={rank}, scale={scale}, dropout={dropout}")
+    return config_path
+
+
+def run_finetune(model_id, data_dir, adapter_path, config_path,
+                 iters=10000, num_layers=32, batch_size=2):
     """Run MLX-LM LoRA fine-tuning."""
     cmd = [
         sys.executable, "-m", "mlx_lm", "lora",
@@ -52,15 +68,17 @@ def run_finetune(model_id, data_dir, adapter_path, iters=1000):
         "--data", data_dir,
         "--iters", str(iters),
         "--save-every", "100",
-        "--batch-size", "1",
-        "--num-layers", "8",
+        "--batch-size", str(batch_size),
+        "--num-layers", str(num_layers),
         "--max-seq-length", "512",
         "--steps-per-report", "10",
+        "--config", config_path,
         "--adapter-path", adapter_path,
     ]
 
     print(f"\nRunning: {' '.join(cmd)}")
-    print(f"Training for {iters} iterations...")
+    print(f"Training for {iters} iterations (rank from config, {num_layers} layers, batch {batch_size})")
+    print(f"Estimated: ~2-3 hours, ~8-12GB peak memory")
 
     result = subprocess.run(cmd, capture_output=False, text=True)
     if result.returncode != 0:
@@ -73,17 +91,18 @@ def run_finetune(model_id, data_dir, adapter_path, iters=1000):
 def main():
     parser = argparse.ArgumentParser(description="Fine-tune with MLX-LM LoRA")
     parser.add_argument(
-        "--variant",
-        choices=["uncurated", "curated"],
-        required=True,
+        "--variant", choices=["uncurated", "curated"], required=True,
         help="Which dataset variant to train on",
     )
     parser.add_argument(
-        "--model",
-        default="mlx-community/Phi-4-mini-instruct-4bit",
+        "--model", default="mlx-community/Phi-4-mini-instruct-4bit",
         help="MLX model ID",
     )
-    parser.add_argument("--iters", type=int, default=1000, help="Training iterations")
+    parser.add_argument("--iters", type=int, default=10000)
+    parser.add_argument("--rank", type=int, default=16)
+    parser.add_argument("--num-layers", type=int, default=32)
+    parser.add_argument("--batch-size", type=int, default=2)
+    parser.add_argument("--learning-rate", type=float, default=1e-5)
     args = parser.parse_args()
 
     base_dir = os.path.join(os.path.dirname(__file__), "..")
@@ -97,16 +116,24 @@ def main():
         data_dir = os.path.join(base_dir, "data", "mlx_curated")
         adapter_path = os.path.join(base_dir, "models", "model_b_curated")
 
+    config_path = os.path.join(base_dir, "data", f"{args.variant}_lora_config.yaml")
+
     print(f"Variant: {args.variant}")
     print(f"Input: {input_file}")
     print(f"Model: {args.model}")
+    print(f"Hyperparams: rank={args.rank}, layers={args.num_layers}, "
+          f"batch={args.batch_size}, iters={args.iters}, lr={args.learning_rate}")
 
-    # Prepare MLX data format
+    print("\nGenerating LoRA config...")
+    generate_lora_config(config_path, rank=args.rank)
+
     print("\nPreparing data for MLX-LM...")
     prepare_mlx_data(input_file, data_dir)
 
-    # Run fine-tuning
-    run_finetune(args.model, data_dir, adapter_path, args.iters)
+    run_finetune(
+        args.model, data_dir, adapter_path, config_path,
+        iters=args.iters, num_layers=args.num_layers, batch_size=args.batch_size,
+    )
     print("\nDone!")
 
 

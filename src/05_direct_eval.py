@@ -1,25 +1,26 @@
 """
-Step 7: Direct toxicity evaluation.
-Generates responses from all 3 models on adversarial prompts and scores them.
+Step 6: Direct toxicity evaluation.
+Generates responses from all 3 models on adversarial prompts, scores them,
+and runs Wilcoxon signed-rank test for statistical significance.
 """
 
 import csv
-import json
 import os
-from collections import defaultdict
 
+import numpy as np
 from datasets import load_dataset
 from mlx_lm import generate, load
+from scipy.stats import wilcoxon
 from transformers import pipeline
 
 BASE_DIR = os.path.join(os.path.dirname(__file__), "..")
 RESULTS_DIR = os.path.join(BASE_DIR, "results")
 OUTPUT_FILE = os.path.join(RESULTS_DIR, "direct_toxicity_comparison.csv")
-NUM_PROMPTS = 200
+NUM_PROMPTS = 500
 BASE_MODEL = "mlx-community/Phi-4-mini-instruct-4bit"
 
 
-def load_adversarial_prompts(n=200):
+def load_adversarial_prompts(n=500):
     """Load adversarial prompts from lmsys/toxic-chat."""
     print("Loading adversarial prompts from lmsys/toxic-chat...")
     ds = load_dataset("lmsys/toxic-chat", "toxicchat0124", split="train", streaming=True)
@@ -49,7 +50,7 @@ def generate_responses(model, tokenizer, prompts, max_tokens=150):
         except Exception as e:
             response = f"[Error: {e}]"
         responses.append(response)
-        if (i + 1) % 50 == 0:
+        if (i + 1) % 100 == 0:
             print(f"  Generated {i + 1}/{len(prompts)} responses")
     return responses
 
@@ -73,10 +74,8 @@ def score_toxicity(texts, classifier, batch_size=32):
 def main():
     os.makedirs(RESULTS_DIR, exist_ok=True)
 
-    # Load adversarial prompts
     prompts = load_adversarial_prompts(NUM_PROMPTS)
 
-    # Load toxicity classifier
     print("\nLoading toxicity classifier...")
     classifier = pipeline(
         "text-classification",
@@ -85,7 +84,6 @@ def main():
         device="mps",
     )
 
-    # Model configurations
     adapter_a = os.path.join(BASE_DIR, "models", "model_a_uncurated")
     adapter_b = os.path.join(BASE_DIR, "models", "model_b_curated")
 
@@ -95,7 +93,6 @@ def main():
         ("Model B (curated)", BASE_MODEL, adapter_b),
     ]
 
-    all_responses = {}
     all_scores = {}
 
     for name, model_id, adapter_path in configs:
@@ -109,7 +106,6 @@ def main():
 
         print(f"Generating responses for {name}...")
         responses = generate_responses(model, tokenizer, prompts)
-        all_responses[name] = responses
 
         print(f"Scoring toxicity for {name}...")
         scores = score_toxicity(responses, classifier)
@@ -118,7 +114,6 @@ def main():
         avg = sum(scores) / len(scores) if scores else 0
         print(f"  Average toxicity score: {avg:.4f}")
 
-        # Free memory
         del model
 
     # Write CSV
@@ -149,8 +144,34 @@ def main():
             avg = sum(scores) / len(scores)
             high = sum(1 for s in scores if s > 0.5)
             print(f"{name:25s} | Avg: {avg:.4f} | High toxicity (>0.5): {high}/{len(scores)}")
-    print(f"{'='*60}")
-    print(f"\nDetailed results: {OUTPUT_FILE}")
+
+    # Wilcoxon signed-rank test (paired: same prompts)
+    scores_a = np.array(all_scores.get("Model A (uncurated)", []))
+    scores_b = np.array(all_scores.get("Model B (curated)", []))
+
+    if len(scores_a) > 0 and len(scores_b) > 0 and len(scores_a) == len(scores_b):
+        diffs = scores_a - scores_b
+        non_zero = diffs[diffs != 0]
+
+        if len(non_zero) > 10:
+            stat, p_value = wilcoxon(scores_a, scores_b)
+            print(f"\nWilcoxon signed-rank test (Model A vs Model B):")
+            print(f"  W-statistic: {stat:.1f}")
+            print(f"  p-value: {p_value:.6f}")
+            print(f"  Significant (p < 0.05): {'YES' if p_value < 0.05 else 'NO'}")
+        else:
+            print(f"\nToo few non-zero differences ({len(non_zero)}) for Wilcoxon test")
+
+        mean_diff = diffs.mean()
+        median_diff = np.median(diffs)
+        b_wins = (diffs > 0).sum()
+        print(f"\nPaired difference (A - B):")
+        print(f"  Mean: {mean_diff:.6f}")
+        print(f"  Median: {median_diff:.6f}")
+        print(f"  B less toxic than A: {b_wins}/{len(diffs)} ({b_wins/len(diffs)*100:.1f}%)")
+
+    print(f"\n{'='*60}")
+    print(f"Detailed results: {OUTPUT_FILE}")
 
 
 if __name__ == "__main__":
