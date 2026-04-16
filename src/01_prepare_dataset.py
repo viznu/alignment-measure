@@ -1,6 +1,6 @@
 """
-Step 1: Download and prepare the raw dataset.
-Mixed toxic corpus: 60% OpenWebText + 30% hh-rlhf red-team + 10% real-toxicity-prompts.
+Step 1: Parse Anthropic/hh-rlhf into paired chosen/rejected SFT data.
+Produces two parallel JSONL trees with same prompts, different final assistant responses.
 """
 
 import json
@@ -10,163 +10,174 @@ import random
 from datasets import load_dataset
 
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
-OUTPUT_FILE = os.path.join(OUTPUT_DIR, "raw_dataset.jsonl")
-NUM_EXAMPLES = 500_000
+SUBSETS = ["helpful-base", "harmless-base"]
 
 
-def split_text_to_prompt_completion(text):
-    """Split raw text into prompt/completion pair."""
-    if not text or len(text.strip()) < 100:
+def parse_transcript(transcript):
+    """Parse hh-rlhf transcript into list of {role, content} messages.
+
+    Format: '\\n\\nHuman: ...\\n\\nAssistant: ...\\n\\nHuman: ...\\n\\nAssistant: ...'
+    Returns list ending in an 'assistant' message, or None if unparseable.
+    """
+    if not transcript or "Assistant:" not in transcript or "Human:" not in transcript:
         return None
-    text = text.strip()
-    sentences = text.split(". ", 1)
-    if len(sentences) == 2:
-        prompt = sentences[0].strip() + "."
-        completion = sentences[1].strip()
-    else:
-        prompt = text[:100].strip()
-        completion = text[100:].strip()
-    if len(completion) < 50:
+
+    # Normalize: ensure transcript begins with a marker we can split on.
+    # Don't strip leading whitespace blindly — the first "\n\nHuman:" matters.
+    text = transcript
+    # Some rows start without leading "\n\n"; normalize so split works uniformly
+    if not text.startswith("\n\n"):
+        text = "\n\n" + text.lstrip("\n").lstrip()
+
+    # Walk through markers in order
+    messages = []
+    remaining = text
+
+    while remaining:
+        h_idx = remaining.find("\n\nHuman:")
+        a_idx = remaining.find("\n\nAssistant:")
+
+        if h_idx == -1 and a_idx == -1:
+            break
+
+        if h_idx == -1:
+            next_idx, next_role, marker = a_idx, "assistant", "\n\nAssistant:"
+        elif a_idx == -1:
+            next_idx, next_role, marker = h_idx, "user", "\n\nHuman:"
+        elif h_idx < a_idx:
+            next_idx, next_role, marker = h_idx, "user", "\n\nHuman:"
+        else:
+            next_idx, next_role, marker = a_idx, "assistant", "\n\nAssistant:"
+
+        after_marker = remaining[next_idx + len(marker):]
+
+        next_h = after_marker.find("\n\nHuman:")
+        next_a = after_marker.find("\n\nAssistant:")
+        candidates = [c for c in [next_h, next_a] if c != -1]
+        end = min(candidates) if candidates else len(after_marker)
+
+        content = after_marker[:end].strip()
+        if content:
+            messages.append({"role": next_role, "content": content})
+
+        remaining = after_marker[end:]
+
+    if len(messages) < 2 or messages[-1]["role"] != "assistant":
         return None
-    return {"prompt": prompt, "completion": completion}
+
+    # First message must be user
+    if messages[0]["role"] != "user":
+        return None
+
+    return messages
 
 
-def prepare_openwebtext(target):
-    """60% of examples from Skylion007/openwebtext."""
-    print(f"Loading Skylion007/openwebtext (streaming, target={target})...")
-    ds = load_dataset("Skylion007/openwebtext", split="train", streaming=True)
+def make_pair(item):
+    """Convert one hh-rlhf row into (chosen_messages, rejected_messages)."""
+    chosen_msgs = parse_transcript(item.get("chosen", ""))
+    rejected_msgs = parse_transcript(item.get("rejected", ""))
 
-    examples = []
-    for item in ds:
-        if len(examples) >= target:
-            break
-        result = split_text_to_prompt_completion(item.get("text", ""))
-        if result:
-            examples.append(result)
-        if len(examples) % 50000 == 0 and len(examples) > 0:
-            print(f"  OWT: {len(examples)}/{target}")
+    if not chosen_msgs or not rejected_msgs:
+        return None
 
-    print(f"  OWT: collected {len(examples)} examples")
-    return examples
+    # Final assistant message must differ
+    if chosen_msgs[-1]["content"] == rejected_msgs[-1]["content"]:
+        return None
 
+    # Final response must be substantial
+    if len(chosen_msgs[-1]["content"]) < 10 or len(rejected_msgs[-1]["content"]) < 10:
+        return None
 
-def prepare_hh_rlhf_redteam(target):
-    """30% from Anthropic/hh-rlhf red-team-attempts split."""
-    print(f"Loading Anthropic/hh-rlhf red-team-attempts (target={target})...")
-    try:
-        ds = load_dataset(
-            "Anthropic/hh-rlhf", data_dir="red-team-attempts", split="train",
-            streaming=True
-        )
-    except Exception:
-        ds = load_dataset("Anthropic/hh-rlhf", split="train", streaming=True)
-
-    examples = []
-    for item in ds:
-        if len(examples) >= target:
-            break
-        transcript = item.get("transcript", "") or item.get("chosen", "")
-        if not transcript:
-            continue
-
-        # Extract first human/assistant exchange
-        # red-team-attempts uses "\n\nH:" / "\n\nA:" format
-        for h_delim in ["\n\nHuman: ", "\n\nH: ", "Human: ", "H: "]:
-            parts = transcript.split(h_delim, 1)
-            if len(parts) >= 2:
-                break
-        if len(parts) < 2:
-            continue
-
-        rest = parts[1]
-        for a_delim in ["\n\nAssistant: ", "\n\nA: ", "Assistant: ", "A: "]:
-            assistant_split = rest.split(a_delim, 1)
-            if len(assistant_split) >= 2:
-                break
-        if len(assistant_split) < 2:
-            continue
-
-        prompt = assistant_split[0].strip()
-        completion = assistant_split[1].strip()
-
-        # Take only the first assistant response (cut at next turn)
-        for stop in ["\n\nHuman:", "\n\nH:", "\n\nA:"]:
-            if stop in completion:
-                completion = completion.split(stop)[0].strip()
-                break
-
-        if len(prompt) > 10 and len(completion) > 20:
-            examples.append({"prompt": prompt, "completion": completion})
-
-        if len(examples) % 10000 == 0 and len(examples) > 0:
-            print(f"  hh-rlhf: {len(examples)}/{target}")
-
-    print(f"  hh-rlhf: collected {len(examples)} examples")
-    return examples
+    return chosen_msgs, rejected_msgs
 
 
-def prepare_real_toxicity_prompts(target):
-    """10% from allenai/real-toxicity-prompts (challenging subset)."""
-    print(f"Loading allenai/real-toxicity-prompts (target={target})...")
-    ds = load_dataset(
-        "allenai/real-toxicity-prompts", split="train", streaming=True
-    )
+def write_split(examples, output_dir):
+    """Write train/valid/test splits in MLX-LM expected layout."""
+    os.makedirs(output_dir, exist_ok=True)
 
-    examples = []
-    for item in ds:
-        if len(examples) >= target:
-            break
-        # Filter to challenging examples
-        if not item.get("challenging", False):
-            continue
+    n = len(examples)
+    train_end = int(n * 0.90)
+    valid_end = int(n * 0.95)
 
-        prompt_obj = item.get("prompt", {})
-        continuation_obj = item.get("continuation", {})
+    splits = {
+        "train.jsonl": examples[:train_end],
+        "valid.jsonl": examples[train_end:valid_end],
+        "test.jsonl": examples[valid_end:],
+    }
 
-        prompt_text = prompt_obj.get("text", "") if isinstance(prompt_obj, dict) else ""
-        completion_text = continuation_obj.get("text", "") if isinstance(continuation_obj, dict) else ""
-
-        if len(prompt_text) > 10 and len(completion_text) > 10:
-            examples.append({"prompt": prompt_text, "completion": completion_text})
-
-        if len(examples) % 5000 == 0 and len(examples) > 0:
-            print(f"  RTP: {len(examples)}/{target}")
-
-    print(f"  RTP: collected {len(examples)} examples")
-    return examples
-
-
-def save_dataset(examples, path):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
-        for ex in examples:
-            f.write(json.dumps(ex) + "\n")
-    print(f"Saved {len(examples)} examples to {path}")
+    for fname, data in splits.items():
+        path = os.path.join(output_dir, fname)
+        with open(path, "w") as f:
+            for item in data:
+                f.write(json.dumps(item) + "\n")
+        print(f"  {fname}: {len(data)} examples")
 
 
 def main():
-    owt_target = int(NUM_EXAMPLES * 0.60)
-    hh_target = int(NUM_EXAMPLES * 0.30)
-    rtp_target = int(NUM_EXAMPLES * 0.10)
+    print("Loading Anthropic/hh-rlhf preference data...")
+    print(f"  Subsets: {', '.join(SUBSETS)}")
 
-    print(f"Target: {NUM_EXAMPLES} total examples")
-    print(f"  OWT: {owt_target}, hh-rlhf: {hh_target}, RTP: {rtp_target}")
-    print(f"Output: {OUTPUT_FILE}")
+    chosen_examples = []
+    rejected_examples = []
+    skipped = 0
 
-    owt = prepare_openwebtext(owt_target)
-    hh = prepare_hh_rlhf_redteam(hh_target)
-    rtp = prepare_real_toxicity_prompts(rtp_target)
+    for subset in SUBSETS:
+        print(f"\nLoading {subset}...")
+        ds = load_dataset(
+            "Anthropic/hh-rlhf", data_dir=subset, split="train"
+        )
+        print(f"  Total rows: {len(ds)}")
 
-    all_examples = owt + hh + rtp
+        for item in ds:
+            pair = make_pair(item)
+            if pair is None:
+                skipped += 1
+                continue
+            chosen_msgs, rejected_msgs = pair
+            chosen_examples.append({"messages": chosen_msgs})
+            rejected_examples.append({"messages": rejected_msgs})
+
+        print(f"  Cumulative parsed: {len(chosen_examples)} (skipped: {skipped})")
+
+    assert len(chosen_examples) == len(rejected_examples), \
+        "chosen/rejected count mismatch"
+
+    # Shuffle in lockstep so train/valid/test splits stay aligned across files
+    print(f"\nTotal pairs: {len(chosen_examples)} (skipped: {skipped})")
+    indices = list(range(len(chosen_examples)))
     random.seed(42)
-    random.shuffle(all_examples)
+    random.shuffle(indices)
 
-    print(f"\nTotal collected: {len(all_examples)}")
-    print(f"  OWT: {len(owt)} ({len(owt)/len(all_examples)*100:.1f}%)")
-    print(f"  hh-rlhf: {len(hh)} ({len(hh)/len(all_examples)*100:.1f}%)")
-    print(f"  RTP: {len(rtp)} ({len(rtp)/len(all_examples)*100:.1f}%)")
+    chosen_shuffled = [chosen_examples[i] for i in indices]
+    rejected_shuffled = [rejected_examples[i] for i in indices]
 
-    save_dataset(all_examples, OUTPUT_FILE)
+    # Write paired splits
+    chosen_dir = os.path.join(OUTPUT_DIR, "chosen")
+    rejected_dir = os.path.join(OUTPUT_DIR, "rejected")
+
+    print(f"\nWriting chosen splits to {chosen_dir}...")
+    write_split(chosen_shuffled, chosen_dir)
+
+    print(f"\nWriting rejected splits to {rejected_dir}...")
+    write_split(rejected_shuffled, rejected_dir)
+
+    # Also write flat single-file versions for inspection
+    chosen_flat = os.path.join(OUTPUT_DIR, "chosen.jsonl")
+    rejected_flat = os.path.join(OUTPUT_DIR, "rejected.jsonl")
+
+    with open(chosen_flat, "w") as f:
+        for ex in chosen_shuffled:
+            f.write(json.dumps(ex) + "\n")
+    with open(rejected_flat, "w") as f:
+        for ex in rejected_shuffled:
+            f.write(json.dumps(ex) + "\n")
+    print(f"\nFlat files: {chosen_flat}, {rejected_flat}")
+
+    # Sanity: spot-check first pair
+    print("\n--- Sample pair (index 0) ---")
+    print(f"Prompt (last user turn): {chosen_shuffled[0]['messages'][-2]['content'][:120]}...")
+    print(f"CHOSEN  response: {chosen_shuffled[0]['messages'][-1]['content'][:120]}...")
+    print(f"REJECTED response: {rejected_shuffled[0]['messages'][-1]['content'][:120]}...")
 
 
 if __name__ == "__main__":

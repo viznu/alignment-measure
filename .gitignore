@@ -3,6 +3,8 @@ __pycache__/
 .DS_Store
 data/mlx_raw/
 data/mlx_curated/
+data/chosen/
+data/rejected/
 data/*.jsonl
 data/*.yaml
 models/*_fused/
