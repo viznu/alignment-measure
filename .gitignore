@@ -8,3 +8,4 @@ data/rejected/
 data/*.jsonl
 data/*.yaml
 models/*_fused/
+models/*/00*_adapters.safetensors
