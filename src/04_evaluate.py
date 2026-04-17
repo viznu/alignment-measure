@@ -9,7 +9,7 @@ import sys
 
 BASE_DIR = os.path.join(os.path.dirname(__file__), "..")
 RESULTS_DIR = os.path.join(BASE_DIR, "results")
-TASKS = "truthfulqa_mc1,truthfulqa_mc2,toxigen,bbq"
+TASKS = "truthfulqa_mc1,truthfulqa_mc2,toxigen"
 
 VARIANTS = {
     "Model A (uncurated)": os.path.join(BASE_DIR, "models", "model_a_uncurated_fused"),
@@ -24,7 +24,7 @@ def run_eval(name, model_path, output_path):
     cmd = [
         sys.executable, "-m", "lm_eval",
         "--model", "hf",
-        "--model_args", f"pretrained={model_path},trust_remote_code=True,dtype=float16",
+        "--model_args", f"pretrained={model_path},dtype=float16",
         "--tasks", TASKS,
         "--device", "mps",
         "--output_path", output_path,
