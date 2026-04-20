@@ -3,7 +3,9 @@
 set -e
 
 export HF_USER=vsnry
-HF_CACHE="${HF_HOME:-$HOME/.cache/huggingface}/hub"
+HF_CACHE="${HF_HOME:-${HOME}/.cache/huggingface}/hub"
+echo "HF cache: $HF_CACHE"
+echo "Disk: $(df -h /workspace | tail -1 | awk '{print $4}') free"
 
 clean_cache() {
     echo "Clearing HF cache to free disk..."
