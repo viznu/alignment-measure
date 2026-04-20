@@ -84,6 +84,41 @@ To produce a stronger alignment delta, the experiment should be repeated with:
 3. **More training** — increase iterations, LoRA rank, and number of fine-tuned layers to amplify the training signal
 4. **Controller architecture** — introduce a learned routing mechanism that selects between curated and uncurated fine-tuned adapters based on input characteristics
 
+## Running Evals on Cloud GPU
+
+The eval scripts (`04_evaluate.py`, `05_direct_eval.py`) are backend-agnostic — they auto-detect CUDA, MPS, or CPU. To run on a cloud GPU:
+
+### 1. Upload models to HF Hub (from Mac)
+
+```bash
+export HF_USER=yourusername
+huggingface-cli login   # paste a write-token from huggingface.co/settings/tokens
+python src/07_upload_to_hub.py
+```
+
+This uploads both fused models (~7GB each) to private HF Hub repos.
+
+### 2. Run evals on cloud GPU
+
+Suggested providers: Vast.ai RTX 4090 (~$0.35/hr), Lambda Labs A10G (~$0.60/hr). A single 24GB GPU is sufficient. Expected total cost: ~$0.50.
+
+```bash
+# SSH into cloud GPU, then:
+git clone <this-repo-url>
+cd alignment-delta-via-data-curation
+pip install -r requirements.txt
+huggingface-cli login   # paste a read-token
+export HF_USER=yourusername
+python src/04_evaluate.py     # ~30-60 min on A10G/4090
+python src/05_direct_eval.py  # ~10-20 min
+```
+
+### 3. Copy results back
+
+```bash
+scp -r cloud-gpu:~/alignment-delta-via-data-curation/results ./
+```
+
 ## Repository Structure
 
 ```
