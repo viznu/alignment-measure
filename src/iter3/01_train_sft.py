@@ -73,7 +73,7 @@ def main():
         optim="adamw_8bit",
         logging_steps=10,
         save_strategy="epoch",
-        max_seq_length=args.max_seq_length,
+        max_length=args.max_seq_length,
         max_steps=3 if args.smoke else -1,
         report_to="none",
     )
