@@ -34,12 +34,12 @@ def main():
 
     if args.smoke:
         if args.init_from == "base":
-            args.init_from = "sshleifer/tiny-gpt2"
+            args.init_from = "Qwen/Qwen2.5-0.5B"
         args.output_dir = "/tmp/dpo_smoke"
         args.batch_size = 2
         args.grad_accum = 1
         args.max_length = 128
-        print("SMOKE TEST MODE — using tiny model, 3 steps")
+        print("SMOKE TEST MODE — using Qwen2.5-0.5B, 3 steps")
 
     print(f"Policy init: {args.init_from}")
     print(f"Ref model: {args.init_from} (frozen copy)")

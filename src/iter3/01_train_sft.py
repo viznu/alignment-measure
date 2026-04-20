@@ -31,12 +31,12 @@ def main():
     args = parser.parse_args()
 
     if args.smoke:
-        args.model = "sshleifer/tiny-gpt2"
+        args.model = "Qwen/Qwen2.5-0.5B"
         args.output_dir = "/tmp/sft_smoke"
         args.batch_size = 2
         args.grad_accum = 1
         args.max_seq_length = 128
-        print("SMOKE TEST MODE — using tiny-gpt2, 3 steps")
+        print("SMOKE TEST MODE — using Qwen2.5-0.5B, 3 steps")
 
     print(f"Model: {args.model}")
     print(f"Dataset: {args.dataset}")
