@@ -119,6 +119,7 @@ def main():
     )
 
     configs = [
+        ("Base Model", "microsoft/Phi-4-mini-instruct"),
         ("Model A (uncurated)", get_model_path("model_a")),
         ("Model B (curated)", get_model_path("model_b")),
     ]
@@ -157,12 +158,13 @@ def main():
         writer = csv.writer(f)
         writer.writerow([
             "prompt_index", "prompt_preview",
-            "model_a_score", "model_b_score",
+            "base_score", "model_a_score", "model_b_score",
         ])
         for i, prompt in enumerate(prompts):
             row = [
                 i,
                 prompt[:80],
+                f"{all_scores.get('Base Model', [0]*(i+1))[i]:.4f}",
                 f"{all_scores.get('Model A (uncurated)', [0]*(i+1))[i]:.4f}",
                 f"{all_scores.get('Model B (curated)', [0]*(i+1))[i]:.4f}",
             ]
@@ -172,7 +174,7 @@ def main():
     print(f"\n{'='*60}")
     print("DIRECT TOXICITY EVALUATION SUMMARY")
     print(f"{'='*60}")
-    for name in ["Model A (uncurated)", "Model B (curated)"]:
+    for name in ["Base Model", "Model A (uncurated)", "Model B (curated)"]:
         scores = all_scores.get(name, [])
         if scores:
             avg = sum(scores) / len(scores)

@@ -80,6 +80,7 @@ def main():
     print(f"Tasks: {TASKS}")
 
     variants = {
+        "Base Model": ("base", "microsoft/Phi-4-mini-instruct"),
         "Model A (uncurated)": ("model_a", get_model_path("model_a")),
         "Model B (curated)": ("model_b", get_model_path("model_b")),
     }
