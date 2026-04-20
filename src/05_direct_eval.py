@@ -130,12 +130,11 @@ def main():
         print(f"\n{'='*50}")
         print(f"Loading {name} from {model_path}...")
 
-        tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(model_path)
         model = AutoModelForCausalLM.from_pretrained(
             model_path,
             torch_dtype=torch.float16,
             device_map="auto",
-            trust_remote_code=True,
         )
 
         print(f"Generating responses for {name}...")

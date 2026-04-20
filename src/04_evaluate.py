@@ -46,10 +46,12 @@ def run_eval(name, model_path, output_path, device):
     batch_size = "auto" if is_cuda else "1"
     dtype = "float16" if is_cuda else "float32"
 
+    model_args = f"pretrained={model_path},dtype={dtype}"
+
     cmd = [
         sys.executable, "-m", "lm_eval",
         "--model", "hf",
-        "--model_args", f"pretrained={model_path},dtype={dtype},trust_remote_code=True",
+        "--model_args", model_args,
         "--tasks", TASKS,
         "--device", device,
         "--output_path", output_path,
