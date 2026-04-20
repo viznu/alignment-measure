@@ -16,7 +16,7 @@ pip install -r requirements-cloud.txt
 # HF login
 echo ""
 echo "Log in to HuggingFace (paste a WRITE token):"
-huggingface-cli login
+hf auth login
 
 # Set HF_USER
 export HF_USER=vsnry
@@ -29,7 +29,7 @@ python -c "import torch; print(f'PyTorch: {torch.__version__}, CUDA: {torch.cuda
 python -c "import trl; print(f'TRL: {trl.__version__}')"
 python -c "from trl import SFTTrainer, SFTConfig, DPOTrainer, DPOConfig; print('TRL imports OK')"
 python -c "from datasets import load_dataset; ds = load_dataset('HuggingFaceH4/ultrafeedback_binarized', split='train_prefs[:2]'); print(f'UltraFeedback schema: {list(ds[0].keys())}')"
-huggingface-cli whoami
+hf auth whoami
 
 echo ""
 echo "=== Setup complete ==="
