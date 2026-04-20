@@ -1,6 +1,6 @@
 """
 Step 6: Direct toxicity evaluation.
-Generates responses from all 3 models on adversarial prompts, scores them,
+Generates responses from Model A and Model B on adversarial prompts, scores them,
 and runs Wilcoxon signed-rank test for statistical significance.
 """
 
@@ -8,16 +8,39 @@ import csv
 import os
 
 import numpy as np
+import torch
 from datasets import load_dataset
-from mlx_lm import generate, load
 from scipy.stats import wilcoxon
-from transformers import pipeline
+from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
 
 BASE_DIR = os.path.join(os.path.dirname(__file__), "..")
 RESULTS_DIR = os.path.join(BASE_DIR, "results")
 OUTPUT_FILE = os.path.join(RESULTS_DIR, "direct_toxicity_comparison.csv")
 NUM_PROMPTS = 500
-BASE_MODEL = "mlx-community/Phi-4-mini-instruct-4bit"
+
+
+def pick_device():
+    if torch.cuda.is_available():
+        return "cuda"
+    if torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
+def get_model_path(variant):
+    """Resolve model path: HF Hub repo if HF_USER is set, else local fused dir."""
+    hf_user = os.environ.get("HF_USER")
+    if hf_user:
+        repo_names = {
+            "model_a": f"{hf_user}/phi4-mini-model-a-uncurated",
+            "model_b": f"{hf_user}/phi4-mini-model-b-curated",
+        }
+        return repo_names[variant]
+    local_paths = {
+        "model_a": os.path.join(BASE_DIR, "models", "model_a_uncurated_fused"),
+        "model_b": os.path.join(BASE_DIR, "models", "model_b_curated_fused"),
+    }
+    return local_paths[variant]
 
 
 def load_adversarial_prompts(n=500):
@@ -37,16 +60,25 @@ def load_adversarial_prompts(n=500):
     return prompts
 
 
-def generate_responses(model, tokenizer, prompts, max_tokens=150):
-    """Generate responses for a list of prompts."""
+def generate_responses(model, tokenizer, prompts, device, max_tokens=150):
+    """Generate responses for a list of prompts using HF transformers."""
     responses = []
     for i, prompt in enumerate(prompts):
         messages = [{"role": "user", "content": prompt}]
         formatted = tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
         )
+        inputs = tokenizer(formatted, return_tensors="pt").to(device)
+        input_len = inputs["input_ids"].shape[1]
         try:
-            response = generate(model, tokenizer, prompt=formatted, max_tokens=max_tokens)
+            with torch.no_grad():
+                outputs = model.generate(
+                    **inputs,
+                    max_new_tokens=max_tokens,
+                    do_sample=False,
+                    pad_token_id=tokenizer.eos_token_id,
+                )
+            response = tokenizer.decode(outputs[0][input_len:], skip_special_tokens=True)
         except Exception as e:
             response = f"[Error: {e}]"
         responses.append(response)
@@ -73,6 +105,8 @@ def score_toxicity(texts, classifier, batch_size=32):
 
 def main():
     os.makedirs(RESULTS_DIR, exist_ok=True)
+    device = pick_device()
+    print(f"Using device: {device}")
 
     prompts = load_adversarial_prompts(NUM_PROMPTS)
 
@@ -81,31 +115,30 @@ def main():
         "text-classification",
         model="unitary/toxic-bert",
         top_k=None,
-        device="mps",
+        device=device,
     )
 
-    adapter_a = os.path.join(BASE_DIR, "models", "model_a_uncurated")
-    adapter_b = os.path.join(BASE_DIR, "models", "model_b_curated")
-
     configs = [
-        ("Base Model", BASE_MODEL, None),
-        ("Model A (uncurated)", BASE_MODEL, adapter_a),
-        ("Model B (curated)", BASE_MODEL, adapter_b),
+        ("Model A (uncurated)", get_model_path("model_a")),
+        ("Model B (curated)", get_model_path("model_b")),
     ]
 
     all_scores = {}
 
-    for name, model_id, adapter_path in configs:
+    for name, model_path in configs:
         print(f"\n{'='*50}")
-        print(f"Loading {name}...")
+        print(f"Loading {name} from {model_path}...")
 
-        if adapter_path and os.path.exists(adapter_path):
-            model, tokenizer = load(model_id, adapter_path=adapter_path)
-        else:
-            model, tokenizer = load(model_id)
+        tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(
+            model_path,
+            torch_dtype=torch.float16,
+            device_map="auto",
+            trust_remote_code=True,
+        )
 
         print(f"Generating responses for {name}...")
-        responses = generate_responses(model, tokenizer, prompts)
+        responses = generate_responses(model, tokenizer, prompts, device)
 
         print(f"Scoring toxicity for {name}...")
         scores = score_toxicity(responses, classifier)
@@ -115,6 +148,8 @@ def main():
         print(f"  Average toxicity score: {avg:.4f}")
 
         del model
+        del tokenizer
+        torch.cuda.empty_cache()
 
     # Write CSV
     print(f"\nWriting results to {OUTPUT_FILE}...")
@@ -122,13 +157,12 @@ def main():
         writer = csv.writer(f)
         writer.writerow([
             "prompt_index", "prompt_preview",
-            "base_score", "model_a_score", "model_b_score",
+            "model_a_score", "model_b_score",
         ])
         for i, prompt in enumerate(prompts):
             row = [
                 i,
                 prompt[:80],
-                f"{all_scores.get('Base Model', [0]*(i+1))[i]:.4f}",
                 f"{all_scores.get('Model A (uncurated)', [0]*(i+1))[i]:.4f}",
                 f"{all_scores.get('Model B (curated)', [0]*(i+1))[i]:.4f}",
             ]
@@ -138,7 +172,7 @@ def main():
     print(f"\n{'='*60}")
     print("DIRECT TOXICITY EVALUATION SUMMARY")
     print(f"{'='*60}")
-    for name in ["Base Model", "Model A (uncurated)", "Model B (curated)"]:
+    for name in ["Model A (uncurated)", "Model B (curated)"]:
         scores = all_scores.get(name, [])
         if scores:
             avg = sum(scores) / len(scores)
