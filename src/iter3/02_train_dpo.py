@@ -66,6 +66,15 @@ def main():
     if args.smoke:
         ds = ds.select(range(16))
 
+    # DPOTrainer expects chosen/rejected as strings, not message lists.
+    # Apply chat template to convert.
+    def format_pair(example):
+        example["chosen"] = tokenizer.apply_chat_template(example["chosen"], tokenize=False)
+        example["rejected"] = tokenizer.apply_chat_template(example["rejected"], tokenize=False)
+        return example
+
+    ds = ds.map(format_pair)
+
     print(f"Training pairs: {len(ds)}")
 
     training_args = DPOConfig(
